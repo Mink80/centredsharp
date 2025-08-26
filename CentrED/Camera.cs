@@ -39,7 +39,7 @@ public class Camera
 
     public void ZoomIn(float delta)
     {
-        Zoom = Math.Clamp(Zoom + delta, 0.2f, 4f);
+        Zoom = Math.Clamp(Zoom + delta, 0.1f, 4f);
     }
 
     public void Update()
