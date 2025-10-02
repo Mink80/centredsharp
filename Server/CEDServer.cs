@@ -29,12 +29,15 @@ public class CEDServer : ILogging, IDisposable
     public DateTime StartTime = DateTime.Now;
     private DateTime _lastFlush = DateTime.Now;
     private DateTime _lastBackup = DateTime.Now;
+    private DateTime _lastActivityUpdate = DateTime.Now;
 
     public bool Quit { get; set; }
     public bool Running { get; private set; }
-    
+
     public bool CPUIdle { get; private set; } = true;
     private NetState<CEDServer>? _CPUIdleOwner;
+
+    private readonly Dictionary<string, DateTime> _lastActivityCheck = new();
 
     public CEDServer(ConfigRoot config, TextWriter? logOutput = default)
     {
@@ -179,6 +182,7 @@ public class CEDServer : ILogging, IDisposable
 
                 AutoSave();
                 AutoBackup();
+                UpdateActivityTracking();
                 ProcessCommands();
 
                 if(CPUIdle)
@@ -258,6 +262,57 @@ public class CEDServer : ILogging, IDisposable
             Backup();
             _lastBackup = DateTime.Now;
         }
+    }
+
+    private void UpdateActivityTracking()
+    {
+        var now = DateTime.Now;
+
+        // Check activity every minute
+        if (now - TimeSpan.FromMinutes(1) <= _lastActivityUpdate)
+            return;
+
+        var currentYear = now.Year;
+        var currentMonth = now.Month;
+
+        foreach (var ns in Clients)
+        {
+            // Only track logged-in users
+            if (string.IsNullOrEmpty(ns.Username))
+                continue;
+
+            var account = GetAccount(ns);
+            if (account == null)
+                continue;
+
+            // Check if this user was active in the last minute
+            // LastAction is updated whenever packets are received
+            if (!_lastActivityCheck.TryGetValue(ns.Username, out var lastCheck))
+            {
+                lastCheck = now.AddMinutes(-2); // Initialize to 2 minutes ago
+            }
+
+            // If LastAction is more recent than our last check, the user was active
+            if (ns.LastAction > lastCheck)
+            {
+                account.AddActivityMinutes(currentYear, currentMonth, 1);
+                Config.Invalidate();
+            }
+
+            _lastActivityCheck[ns.Username] = now;
+        }
+
+        // Clean up disconnected users from tracking
+        var activeUsernames = Clients.Where(ns => !string.IsNullOrEmpty(ns.Username))
+                                    .Select(ns => ns.Username)
+                                    .ToHashSet();
+        var toRemove = _lastActivityCheck.Keys.Where(u => !activeUsernames.Contains(u)).ToList();
+        foreach (var username in toRemove)
+        {
+            _lastActivityCheck.Remove(username);
+        }
+
+        _lastActivityUpdate = now;
     }
 
     public void Flush()

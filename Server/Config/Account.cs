@@ -3,6 +3,13 @@ using CentrED.Utility;
 
 namespace CentrED.Server.Config;
 
+public class MonthlyActivity
+{
+    [XmlAttribute] public int Year { get; set; }
+    [XmlAttribute] public int Month { get; set; }
+    [XmlAttribute] public int ActiveMinutes { get; set; }
+}
+
 public class Account
 {
     public Account() : this("")
@@ -32,6 +39,7 @@ public class Account
     [XmlArray] [XmlArrayItem("Region")] public List<string> Regions { get; set; }
 
     [XmlElement] public DateTime LastLogon { get; set; }
+    [XmlArray] [XmlArrayItem("Month")] public List<MonthlyActivity> ActivityHistory { get; set; } = new();
 
     public override string ToString()
     {
@@ -48,5 +56,31 @@ public class Account
     public bool CheckPassword(string password)
     {
         return PasswordHash.Equals(Crypto.Md5Hash(password), StringComparison.InvariantCultureIgnoreCase);
+    }
+
+    public void AddActivityMinutes(int year, int month, int minutes)
+    {
+        var activity = ActivityHistory.FirstOrDefault(a => a.Year == year && a.Month == month);
+        if (activity == null)
+        {
+            activity = new MonthlyActivity { Year = year, Month = month, ActiveMinutes = 0 };
+            ActivityHistory.Add(activity);
+
+            // Keep only the last 12 months
+            if (ActivityHistory.Count > 12)
+            {
+                // Remove the oldest entry
+                var oldest = ActivityHistory.OrderBy(a => a.Year).ThenBy(a => a.Month).First();
+                ActivityHistory.Remove(oldest);
+            }
+        }
+
+        activity.ActiveMinutes += minutes;
+    }
+
+    public int GetActivityMinutes(int year, int month)
+    {
+        var activity = ActivityHistory.FirstOrDefault(a => a.Year == year && a.Month == month);
+        return activity?.ActiveMinutes ?? 0;
     }
 }
