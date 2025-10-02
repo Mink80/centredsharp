@@ -12,8 +12,9 @@ public class CEDServer : ILogging, IDisposable
 {
     public const int MaxConnections = 1024;
     private const int SendPipeSize = 1024 * 256;
-    
+
     private readonly Logger _logger = new();
+    public UserActivityLogger UserActivityLogger { get; private set; }
     private ProtocolVersion ProtocolVersion;
     private Socket Listener { get; } = null!;
     public ConfigRoot Config { get; }
@@ -38,14 +39,16 @@ public class CEDServer : ILogging, IDisposable
     private NetState<CEDServer>? _CPUIdleOwner;
 
     private readonly Dictionary<string, DateTime> _lastActivityCheck = new();
+    private readonly Dictionary<string, bool> _userIdleState = new();
 
     public CEDServer(ConfigRoot config, TextWriter? logOutput = default)
     {
         if (logOutput == null)
             logOutput = Console.Out;
         _logger.Out = logOutput;
-        
+
         LogInfo("Initialization started");
+        UserActivityLogger = new UserActivityLogger("user.log");
         Config = config;
         ProtocolVersion = Config.CentrEdPlus ? ProtocolVersion.CentrEDPlus : ProtocolVersion.CentrED;
         LogInfo("Running as " + (Config.CentrEdPlus ? "CentrED+ 0.7.9" : "CentrED 0.6.3"));
@@ -191,11 +194,19 @@ public class CEDServer : ILogging, IDisposable
         }
         finally
         {
-            Listener.Close();
+            // Log all connected users as logged out on server shutdown
+            LogInfo("Server shutting down, logging out all connected users");
             foreach (var ns in Clients)
             {
+                if (!string.IsNullOrEmpty(ns.Username))
+                {
+                    UserActivityLogger.LogEvent(ns.Username, UserActivityEvent.LOGOUT, "Server shutdown");
+                }
                 ns.Dispose();
             }
+
+            Listener.Close();
+            UserActivityLogger.Dispose();
             Running = false;
         }
     }
@@ -231,6 +242,14 @@ public class CEDServer : ILogging, IDisposable
             if (ns.Username != "")
             {
                 Send(new ClientDisconnectedPacket(ns));
+
+                // Log user logout
+                var reason = ns.Running ? "Normal disconnect" : "Connection lost";
+                UserActivityLogger.LogEvent(ns.Username, UserActivityEvent.LOGOUT, reason);
+
+                // Clean up tracking state
+                _lastActivityCheck.Remove(ns.Username);
+                _userIdleState.Remove(ns.Username);
             }
             if (CPUIdle && _CPUIdleOwner == ns)
             {
@@ -285,31 +304,48 @@ public class CEDServer : ILogging, IDisposable
             if (account == null)
                 continue;
 
-            // Check if this user was active in the last minute
-            // LastAction is updated whenever packets are received
-            if (!_lastActivityCheck.TryGetValue(ns.Username, out var lastCheck))
+            // Check idle state using NetState.Active property (checks if LastAction < 2 minutes ago)
+            var isCurrentlyActive = ns.Active;
+
+            // Get previous idle state (default to true/active for new users)
+            if (!_userIdleState.TryGetValue(ns.Username, out var wasActive))
             {
-                lastCheck = now.AddMinutes(-2); // Initialize to 2 minutes ago
+                wasActive = true; // Assume active when first seen
+                _userIdleState[ns.Username] = true;
             }
 
-            // If LastAction is more recent than our last check, the user was active
-            if (ns.LastAction > lastCheck)
+            // Detect state changes and log them
+            if (wasActive && !isCurrentlyActive)
             {
-                account.AddActivityMinutes(currentYear, currentMonth, 1);
-                Config.Invalidate();
+                // User went idle
+                UserActivityLogger.LogEvent(ns.Username, UserActivityEvent.IDLE, "Inactive for 2+ minutes");
+                _userIdleState[ns.Username] = false;
+            }
+            else if (!wasActive && isCurrentlyActive)
+            {
+                // User became active again
+                UserActivityLogger.LogEvent(ns.Username, UserActivityEvent.ACTIVE, "Resumed activity");
+                _userIdleState[ns.Username] = true;
             }
 
-            _lastActivityCheck[ns.Username] = now;
-        }
+            // Track activity minutes (only if user is active)
+            if (isCurrentlyActive)
+            {
+                // Check if this user was active in the last minute
+                if (!_lastActivityCheck.TryGetValue(ns.Username, out var lastCheck))
+                {
+                    lastCheck = now.AddMinutes(-2); // Initialize to 2 minutes ago
+                }
 
-        // Clean up disconnected users from tracking
-        var activeUsernames = Clients.Where(ns => !string.IsNullOrEmpty(ns.Username))
-                                    .Select(ns => ns.Username)
-                                    .ToHashSet();
-        var toRemove = _lastActivityCheck.Keys.Where(u => !activeUsernames.Contains(u)).ToList();
-        foreach (var username in toRemove)
-        {
-            _lastActivityCheck.Remove(username);
+                // If LastAction is more recent than our last check, the user was active
+                if (ns.LastAction > lastCheck)
+                {
+                    account.AddActivityMinutes(currentYear, currentMonth, 1);
+                    Config.Invalidate();
+                }
+
+                _lastActivityCheck[ns.Username] = now;
+            }
         }
 
         _lastActivityUpdate = now;
@@ -441,6 +477,7 @@ public class CEDServer : ILogging, IDisposable
 
     public void Dispose()
     {
+        UserActivityLogger?.Dispose();
         Listener.Dispose();
         Landscape.Dispose();
     }

@@ -56,6 +56,12 @@ public class ConnectionHandling
         {
             ns.LogInfo($"Login {username}");
             ns.Username = account.Name;
+            account.LastLogon = DateTime.Now;
+            ns.Parent.Config.Invalidate();
+
+            // Log user activity
+            ns.Parent.UserActivityLogger.LogEvent(username, UserActivityEvent.LOGIN, $"IP: {ns.RemoteAddress}");
+
             ns.Send(new LoginResponsePacket(LoginState.Ok, ns));
             ns.SendCompressed(new ClientListPacket(ns));
             ns.Parent.Send(new ClientConnectedPacket(ns));

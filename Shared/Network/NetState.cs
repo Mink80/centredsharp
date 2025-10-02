@@ -18,6 +18,7 @@ public class NetState<T> : IDisposable, ILogging where T : ILogging
     public bool Running { get; private set; } = true;
     public bool FlushPending => SendPipe.Reader.AvailableToRead().Length > 0;
     public bool Active => LastAction > DateTime.UtcNow - TimeSpan.FromMinutes(2);
+    public string RemoteAddress => _socket.RemoteEndPoint?.ToString() ?? "Unknown";
     
     private const uint DefaultPipeSize = 1024 * 64;
 
